@@ -30,7 +30,7 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package-qt-linux:
@@ -184,6 +184,8 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_qt }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -226,6 +228,8 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.package_whisper }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       WHISPER_REVISION: ${{ inputs.whisper_model_revision || '5359861c739e955e79d9a303bcbc70fb988958b1' }}
       WHISPER_EXPECTED_SHA256: ${{ inputs.whisper_model_sha256 || '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe' }}

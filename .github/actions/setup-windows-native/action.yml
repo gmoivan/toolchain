@@ -31,6 +31,10 @@ inputs:
     description: "sccache version to download if enabled"
     required: false
     default: "v0.8.2"
+  sccache_sha256:
+    description: "SHA-256 of the sccache Windows archive"
+    required: false
+    default: "de5e9f66bb8a6bbdf0e28cb8a086a8d12699af796bf70bcd9dc40d80715bf9b8"
   enable_full_deps:
     description: "Whether to download and configure OpenCV, FFmpeg, and Whisper model for Windows builds"
     required: false
@@ -88,6 +92,41 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Validate native build inputs
+      shell: pwsh
+      env:
+        INPUT_QT_VERSION: ${{ inputs.qt_version }}
+        INPUT_QT_MODULES: ${{ inputs.qt_modules }}
+        INPUT_QT_CACHE: ${{ inputs.qt_cache }}
+        INPUT_MSVC_ARCH: ${{ inputs.msvc_arch }}
+        INPUT_SELECT_WINDOWS_SDK: ${{ inputs.select_windows_sdk }}
+        INPUT_ENABLE_SCCACHE: ${{ inputs.enable_sccache }}
+        INPUT_SCCACHE_VERSION: ${{ inputs.sccache_version }}
+        INPUT_SCCACHE_SHA256: ${{ inputs.sccache_sha256 }}
+        INPUT_ENABLE_FULL_DEPS: ${{ inputs.enable_full_deps }}
+        INPUT_OPENCV_VERSION: ${{ inputs.opencv_version }}
+        INPUT_OPENCV_RELEASE: ${{ inputs.opencv_release }}
+        INPUT_OPENCV_SHA256: ${{ inputs.opencv_sha256 }}
+        INPUT_FFMPEG_VERSION: ${{ inputs.ffmpeg_version }}
+        INPUT_FFMPEG_RELEASE: ${{ inputs.ffmpeg_release }}
+        INPUT_FFMPEG_SHA256: ${{ inputs.ffmpeg_sha256 }}
+        INPUT_WHISPER_REVISION: ${{ inputs.whisper_model_revision }}
+        INPUT_WHISPER_SHA256: ${{ inputs.whisper_model_sha256 }}
+      run: |
+        if ($env:INPUT_QT_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid Qt version' }
+        if ($env:INPUT_QT_MODULES -notmatch '^[a-z0-9]+( [a-z0-9]+)*$') { throw 'Invalid Qt modules' }
+        foreach ($value in 'INPUT_QT_CACHE','INPUT_SELECT_WINDOWS_SDK','INPUT_ENABLE_SCCACHE','INPUT_ENABLE_FULL_DEPS') {
+          if ((Get-Item "Env:$value").Value -notmatch '^(true|false)$') { throw "Invalid boolean input: $value" }
+        }
+        if ($env:INPUT_MSVC_ARCH -notmatch '^[A-Za-z0-9_-]+$') { throw 'Invalid MSVC architecture' }
+        if ($env:INPUT_SCCACHE_VERSION -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid sccache version' }
+        foreach ($value in 'INPUT_SCCACHE_SHA256','INPUT_OPENCV_SHA256','INPUT_FFMPEG_SHA256','INPUT_WHISPER_SHA256') {
+          if ((Get-Item "Env:$value").Value -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid SHA-256 input: $value" }
+        }
+        if ($env:INPUT_OPENCV_VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $env:INPUT_FFMPEG_VERSION -notmatch '^[0-9]+\.[0-9]+$') { throw 'Invalid dependency version' }
+        if ($env:INPUT_OPENCV_RELEASE -notmatch '^opencv-[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$' -or $env:INPUT_FFMPEG_RELEASE -notmatch '^ffmpeg-[0-9]+\.[0-9]+-r[0-9]+$') { throw 'Invalid dependency release tag' }
+        if ($env:INPUT_WHISPER_REVISION -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid Whisper revision' }
+
     - name: Setup Qt
       uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
       with:
@@ -125,14 +164,18 @@ runs:
     - name: Setup sccache compiler cache
       if: ${{ inputs.enable_sccache == 'true' }}
       shell: pwsh
+      env:
+        INPUT_SCCACHE_VERSION: ${{ inputs.sccache_version }}
+        INPUT_SCCACHE_SHA256: ${{ inputs.sccache_sha256 }}
       run: |
         $sccacheDir = 'C:\tools\sccache'
         if (-not (Test-Path "$sccacheDir\sccache.exe")) {
           New-Item -ItemType Directory -Force -Path $sccacheDir | Out-Null
-          $url = "https://github.com/mozilla/sccache/releases/download/${{ inputs.sccache_version }}/sccache-${{ inputs.sccache_version }}-x86_64-pc-windows-msvc.tar.gz"
+          $url = "https://github.com/mozilla/sccache/releases/download/$env:INPUT_SCCACHE_VERSION/sccache-$env:INPUT_SCCACHE_VERSION-x86_64-pc-windows-msvc.tar.gz"
           curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\sccache.tar.gz" $url
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP\sccache.tar.gz" -Algorithm SHA256).Hash -ne $env:INPUT_SCCACHE_SHA256.ToUpperInvariant()) { throw 'sccache archive hash mismatch' }
           tar -xzf "$env:RUNNER_TEMP\sccache.tar.gz" -C $env:RUNNER_TEMP
-          $extractedDir = Join-Path $env:RUNNER_TEMP "sccache-${{ inputs.sccache_version }}-x86_64-pc-windows-msvc"
+          $extractedDir = Join-Path $env:RUNNER_TEMP "sccache-$env:INPUT_SCCACHE_VERSION-x86_64-pc-windows-msvc"
           Move-Item "$extractedDir\sccache.exe" "$sccacheDir\sccache.exe" -Force
         }
         $sccacheDir | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
@@ -142,6 +185,13 @@ runs:
       if: ${{ inputs.enable_full_deps == 'true' }}
       id: full-deps
       shell: pwsh
+      env:
+        INPUT_OPENCV_VERSION: ${{ inputs.opencv_version }}
+        INPUT_OPENCV_RELEASE: ${{ inputs.opencv_release }}
+        INPUT_OPENCV_SHA256: ${{ inputs.opencv_sha256 }}
+        INPUT_FFMPEG_VERSION: ${{ inputs.ffmpeg_version }}
+        INPUT_FFMPEG_RELEASE: ${{ inputs.ffmpeg_release }}
+        INPUT_FFMPEG_SHA256: ${{ inputs.ffmpeg_sha256 }}
       run: |
         function Assert-Sha256([string]$Path, [string]$Expected, [string]$Name) {
           $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -154,9 +204,9 @@ runs:
         # 1. OpenCV for Windows x64
         $opencvDir = "$toolsDir\opencv"
         if (-not (Test-Path "$opencvDir\lib\cmake\opencv4\OpenCVConfig.cmake") -and -not (Test-Path "$opencvDir\OpenCVConfig.cmake")) {
-          $opencvUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/${{ inputs.opencv_release }}/opencv-${{ inputs.opencv_version }}-windows-x64.zip"
+          $opencvUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/$env:INPUT_OPENCV_RELEASE/opencv-$env:INPUT_OPENCV_VERSION-windows-x64.zip"
           curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\opencv-win64.zip" $opencvUrl
-          Assert-Sha256 "$env:RUNNER_TEMP\opencv-win64.zip" '${{ inputs.opencv_sha256 }}' 'OpenCV'
+          Assert-Sha256 "$env:RUNNER_TEMP\opencv-win64.zip" $env:INPUT_OPENCV_SHA256 'OpenCV'
           Expand-Archive -Path "$env:RUNNER_TEMP\opencv-win64.zip" -DestinationPath $opencvDir -Force
         }
         $opencvCmakeDir = if (Test-Path "$opencvDir\lib\cmake\opencv4\OpenCVConfig.cmake") {
@@ -175,9 +225,9 @@ runs:
         # 2. FFmpeg for Windows x64
         $ffmpegDir = "$toolsDir\ffmpeg"
         if (-not (Test-Path "$ffmpegDir\include\libavformat\avformat.h")) {
-          $ffmpegUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/${{ inputs.ffmpeg_release }}/ffmpeg-${{ inputs.ffmpeg_version }}-windows-x64.zip"
+          $ffmpegUrl = "https://github.com/gmoivan/flera-toolchain/releases/download/$env:INPUT_FFMPEG_RELEASE/ffmpeg-$env:INPUT_FFMPEG_VERSION-windows-x64.zip"
           curl -fsSL --retry 3 -o "$env:RUNNER_TEMP\ffmpeg-win64.zip" $ffmpegUrl
-          Assert-Sha256 "$env:RUNNER_TEMP\ffmpeg-win64.zip" '${{ inputs.ffmpeg_sha256 }}' 'FFmpeg'
+          Assert-Sha256 "$env:RUNNER_TEMP\ffmpeg-win64.zip" $env:INPUT_FFMPEG_SHA256 'FFmpeg'
           Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg-win64.zip" -DestinationPath $ffmpegDir -Force
         }
         "FFMPEG_DIR=$ffmpegDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
@@ -195,16 +245,19 @@ runs:
       if: ${{ inputs.enable_full_deps == 'true' }}
       id: whisper-model
       shell: pwsh
+      env:
+        INPUT_WHISPER_REVISION: ${{ inputs.whisper_model_revision }}
+        INPUT_WHISPER_SHA256: ${{ inputs.whisper_model_sha256 }}
       run: |
         $modelsDir = 'C:\tools\models'
         New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
         $modelPath = "$modelsDir\ggml-base.bin"
         if (-not (Test-Path $modelPath)) {
-          $whisperRevision = '${{ inputs.whisper_model_revision }}'
+          $whisperRevision = $env:INPUT_WHISPER_REVISION
           $whisperUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/$whisperRevision/ggml-base.bin"
           curl -fsSL --retry 3 -o $modelPath $whisperUrl
         }
-        $expectedHash = '${{ inputs.whisper_model_sha256 }}'.ToLowerInvariant()
+        $expectedHash = $env:INPUT_WHISPER_SHA256.ToLowerInvariant()
         $actualHash = (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actualHash -ne $expectedHash) {
           throw "Whisper model hash mismatch: expected $expectedHash, got $actualHash"
