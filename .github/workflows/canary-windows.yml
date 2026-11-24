@@ -38,8 +38,10 @@ jobs:
         shell: pwsh
         run: |
           if ($env:OBS_COMMIT -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid OBS commit SHA' }
-          git clone --depth 1 https://github.com/obsproject/obs-studio.git C:\obs-studio-canary
-          git -C C:\obs-studio-canary checkout --detach "$env:OBS_COMMIT"
+          git clone --depth 1 --branch "$env:OBS_VERSION" https://github.com/obsproject/obs-studio.git C:\obs-studio-canary
+          if ($LASTEXITCODE -ne 0) { throw 'OBS clone failed' }
+          $head = git -C C:\obs-studio-canary rev-parse HEAD
+          if ($head -ne $env:OBS_COMMIT) { throw "OBS tag $env:OBS_VERSION resolved to $head, expected $env:OBS_COMMIT" }
 
       - name: Configure OBS Studio canary target
         shell: pwsh

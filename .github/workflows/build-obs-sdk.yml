@@ -82,8 +82,10 @@ jobs:
       - name: Clone OBS Studio
         shell: pwsh
         run: |
-          git clone --recursive --shallow-submodules --depth 1 https://github.com/obsproject/obs-studio.git C:\obs-studio
-          git -C C:\obs-studio checkout --detach "$env:OBS_COMMIT"
+          git clone --recursive --shallow-submodules --depth 1 --branch "$env:OBS_VERSION" https://github.com/obsproject/obs-studio.git C:\obs-studio
+          if ($LASTEXITCODE -ne 0) { throw 'OBS clone failed' }
+          $head = git -C C:\obs-studio rev-parse HEAD
+          if ($head -ne $env:OBS_COMMIT) { throw "OBS tag $env:OBS_VERSION resolved to $head, expected $env:OBS_COMMIT" }
 
       - name: Build OBS Studio SDK
         shell: pwsh
