@@ -6,18 +6,28 @@ on:
         description: 'OpenCV Version Tag (e.g., 4.10.0)'
         required: true
         default: '4.10.0'
+      opencv_tar_sha256:
+        description: 'SHA-256 of the OpenCV Linux source archive'
+        required: true
+        default: '65b814b24bee4c293fbe640e5b2fde23db4b7e0b132040d3f80f7483608ea42b'
+      opencv_zip_sha256:
+        description: 'SHA-256 of the OpenCV Windows source archive'
+        required: true
+        default: '8b1f4d64e896f493be3023b59ea3ae0abdd0d4f8337bae0487e523f9a8dfeb4e'
   push:
     tags:
       - 'opencv-*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-linux:
     name: Build OpenCV (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write
     env:
       OPENCV_DIR: ${{ github.workspace }}/.opencv
     steps:
@@ -25,12 +35,15 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Determine OpenCV version
+        env:
+          INPUT_OPENCV_VERSION: ${{ inputs.opencv_version }}
         run: |
-          if [ -n "${{ inputs.opencv_version }}" ]; then
-            version="${{ inputs.opencv_version }}"
+          if [ -n "$INPUT_OPENCV_VERSION" ]; then
+            version="$INPUT_OPENCV_VERSION"
           else
             version="${GITHUB_REF_NAME#opencv-}"
           fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid OpenCV version: $version" >&2; exit 1; }
           echo "OPENCV_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Install native dependencies
@@ -41,10 +54,14 @@ jobs:
             libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev
 
       - name: Download OpenCV
+        env:
+          OPENCV_TAR_SHA256: ${{ inputs.opencv_tar_sha256 || '65b814b24bee4c293fbe640e5b2fde23db4b7e0b132040d3f80f7483608ea42b' }}
         run: |
+          [[ "$OPENCV_TAR_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "Invalid OpenCV SHA-256" >&2; exit 1; }
           src="$RUNNER_TEMP/opencv"
           mkdir -p "$src"
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/opencv.tar.gz" "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz"
+          echo "$OPENCV_TAR_SHA256  $RUNNER_TEMP/opencv.tar.gz" | sha256sum --check --status || { echo 'OpenCV source hash mismatch' >&2; exit 1; }
           tar -xzf "$RUNNER_TEMP/opencv.tar.gz" -C "$src" --strip-components=1
           echo "OPENCV_SRC=$src" >> "$GITHUB_ENV"
 
@@ -130,21 +147,24 @@ jobs:
     name: Build OpenCV (Windows x64)
     runs-on: windows-2025
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Determine OpenCV version
+        env:
+          INPUT_OPENCV_VERSION: ${{ inputs.opencv_version }}
         shell: pwsh
         run: |
           if ($env:INPUT_OPENCV_VERSION) {
             $version = $env:INPUT_OPENCV_VERSION
           } else {
-            $version = $env:GITHUB_REF_NAME.TrimStart('opencv-')
+            $version = $env:GITHUB_REF_NAME -replace '^opencv-', ''
           }
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Invalid OpenCV version: $version" }
           "OPENCV_VERSION=$version" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-        env:
-          INPUT_OPENCV_VERSION: ${{ inputs.opencv_version }}
 
       - name: Setup MSVC environment
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
@@ -152,12 +172,16 @@ jobs:
           arch: x64
 
       - name: Download OpenCV source
+        env:
+          OPENCV_ZIP_SHA256: ${{ inputs.opencv_zip_sha256 || '8b1f4d64e896f493be3023b59ea3ae0abdd0d4f8337bae0487e523f9a8dfeb4e' }}
         shell: pwsh
         run: |
+          if ($env:OPENCV_ZIP_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Invalid OpenCV SHA-256' }
           $srcRoot = "$env:RUNNER_TEMP\opencv-src"
           New-Item -ItemType Directory -Force -Path $srcRoot | Out-Null
           $zipPath = "$env:RUNNER_TEMP\opencv.zip"
           curl -fsSL --retry 3 -o $zipPath "https://github.com/opencv/opencv/archive/refs/tags/$env:OPENCV_VERSION.zip"
+          if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $env:OPENCV_ZIP_SHA256.ToUpperInvariant()) { throw 'OpenCV source hash mismatch' }
           Expand-Archive -Path $zipPath -DestinationPath $srcRoot -Force
           $extractedDir = Join-Path $srcRoot "opencv-$env:OPENCV_VERSION"
           "OPENCV_SRC=$extractedDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
